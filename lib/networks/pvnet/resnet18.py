@@ -3,8 +3,11 @@ import torch
 from torch.nn import functional as F
 from .resnet import resnet18
 # Temporarily comment out RANSAC imports until compilation is fixed
-# from lib.csrc.ransac_voting.ransac_voting_gpu import ransac_voting_layer, ransac_voting_layer_v3, estimate_voting_distribution_with_mean
+"""
+from lib.csrc.ransac_voting.ransac_voting_gpu import ransac_voting_layer, ransac_voting_layer_v3, estimate_voting_distribution_with_mean
+"""
 from lib.config import cfg
+from lib.utils.pvnet.cpu_voting import cpu_voting
 
 
 class Resnet18(nn.Module):
@@ -69,7 +72,7 @@ class Resnet18(nn.Module):
         vertex = vertex.view(b, h, w, vn_2//2, 2)
         mask = torch.argmax(output['seg'], 1)
         
-        # Temporarily comment out RANSAC voting until compilation is fixed
+        # GPU-based RANSAC voting (temporarily commented out)
         """
         if cfg.test.un_pnp:
             mean = ransac_voting_layer_v3(mask, vertex, 512, inlier_thresh=0.99)
@@ -79,8 +82,18 @@ class Resnet18(nn.Module):
             kpt_2d = ransac_voting_layer_v3(mask, vertex, 128, inlier_thresh=0.99, max_num=100)
             output.update({'mask': mask, 'kpt_2d': kpt_2d})
         """
-        # For now, just update the mask
-        output.update({'mask': mask})
+        
+        # CPU-based RANSAC voting
+        if cfg.test.un_pnp:
+            kpt_2d = cpu_voting(mask[0], vertex[0], n_hyp_points=512, inlier_thresh=0.99)
+            # For uncertainty, we'll use a simplified approximation
+            var = torch.ones_like(kpt_2d) * 2.0  # Fixed uncertainty of 2 pixels
+            output.update({'mask': mask, 'kpt_2d': kpt_2d.unsqueeze(0), 'var': var.unsqueeze(0)})
+        else:
+            kpt_2d = cpu_voting(mask[0], vertex[0], n_hyp_points=128, inlier_thresh=0.99, max_num=100)
+            output.update({'mask': mask, 'kpt_2d': kpt_2d.unsqueeze(0)})
+        
+        return output
 
     def forward(self, x, feature_alignment=False):
         x2s, x4s, x8s, x16s, x32s, xfc = self.resnet18_8s(x)
